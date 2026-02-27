@@ -1,7 +1,9 @@
-﻿using System;
+﻿// Form1.cs
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -30,9 +32,27 @@ namespace shipping_labels
         // Reuse one tooltip (avoid allocating a new one every tick)
         private readonly ToolTip _printerToolTip = new ToolTip();
 
+        // --- Hotkey macros (Keychron Q0 / programmable keypad) ---
+        // Recommended to program the keypad to send F13-F20.
+        // F13: Clear ALL fields
+        // F14: Print
+        // F15: Clear current field
+        // F16: Focus previous editable textbox ("above")
+        // F17: Focus next editable textbox ("below")
+        // F18: Force restart app
+        // F19: Set copies to 6
+        // F20: Set copies to 1
+        private DateTime _lastHotkeyPrintUtc = DateTime.MinValue;
+        private DateTime _lastHotkeyRestartUtc = DateTime.MinValue;
+        private const int HotkeyDebouncePrintMs = 900;
+        private const int HotkeyDebounceRestartMs = 1500;
+
         public Form1()
         {
             InitializeComponent();
+
+            // Allow form-level hotkeys even when a TextBox has focus
+            this.KeyPreview = true;
 
             // UX tweaks
             txtNet.ReadOnly = true;
@@ -81,6 +101,212 @@ namespace shipping_labels
 
             // Printer status indicator (top-right)
             InitPrinterStatus();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            // We only care about the key itself (ignore modifiers)
+            Keys keyCode = keyData & Keys.KeyCode;
+
+            if (keyCode == Keys.F13) { ClearAllFields(); return true; }
+            if (keyCode == Keys.F14) { HotkeyPrint(); return true; }
+            if (keyCode == Keys.F15) { ClearFocusedEntry(); return true; }
+            if (keyCode == Keys.F16) { FocusAdjacentEditableTextBox(previous: true); return true; }
+            if (keyCode == Keys.F17) { FocusAdjacentEditableTextBox(previous: false); return true; }
+            if (keyCode == Keys.F18) { HotkeyForceRestart(); return true; }
+            if (keyCode == Keys.F19) { SetCopiesHotkey(6); return true; }
+            if (keyCode == Keys.F20) { SetCopiesHotkey(1); return true; }
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private bool IsDebounced(ref DateTime lastUtc, int debounceMs)
+        {
+            var now = DateTime.UtcNow;
+
+            if (lastUtc != DateTime.MinValue)
+            {
+                double ms = (now - lastUtc).TotalMilliseconds;
+                if (ms >= 0 && ms < debounceMs) return true;
+            }
+
+            lastUtc = now;
+            return false;
+        }
+
+        private void HotkeyPrint()
+        {
+            // Prevent accidental double-print if the key is held
+            if (IsDebounced(ref _lastHotkeyPrintUtc, HotkeyDebouncePrintMs)) return;
+
+            try
+            {
+                if (btnPrint != null && btnPrint.Enabled)
+                    btnPrint.PerformClick();
+            }
+            catch
+            {
+                // never crash on hotkey
+            }
+        }
+
+        private void SetCopiesHotkey(int copies)
+        {
+            try
+            {
+                if (numCopies == null) return;
+
+                decimal v = copies;
+                if (v < numCopies.Minimum) v = numCopies.Minimum;
+                if (v > numCopies.Maximum) v = numCopies.Maximum;
+
+                numCopies.Value = v;
+                ShowStatus("Copies set to " + (int)numCopies.Value, isError: false);
+            }
+            catch
+            {
+                // never crash on hotkey
+            }
+        }
+
+        private void ClearFocusedEntry()
+        {
+            try
+            {
+                Control focused = GetFocusedControl(this);
+
+                var tb = focused as TextBoxBase;
+                if (tb != null)
+                {
+                    if (tb.ReadOnly) return;
+                    tb.Text = "";
+                    tb.Focus();
+                    return;
+                }
+
+                var nud = focused as NumericUpDown;
+                if (nud != null)
+                {
+                    nud.Value = nud.Minimum;
+                    nud.Focus();
+                    return;
+                }
+            }
+            catch
+            {
+                // never crash on hotkey
+            }
+        }
+
+        private void FocusAdjacentEditableTextBox(bool previous)
+        {
+            try
+            {
+                var boxes = GetEditableTextBoxesOrdered();
+                if (boxes.Count == 0) return;
+
+                Control focused = GetFocusedControl(this);
+                TextBox current = focused as TextBox;
+
+                int idx = -1;
+                if (current != null)
+                {
+                    for (int i = 0; i < boxes.Count; i++)
+                    {
+                        if (ReferenceEquals(boxes[i], current))
+                        {
+                            idx = i;
+                            break;
+                        }
+                    }
+                }
+
+                int targetIdx;
+                if (idx < 0)
+                {
+                    targetIdx = previous ? (boxes.Count - 1) : 0;
+                }
+                else
+                {
+                    targetIdx = previous ? Math.Max(0, idx - 1) : Math.Min(boxes.Count - 1, idx + 1);
+                }
+
+                boxes[targetIdx].Focus();
+                boxes[targetIdx].SelectAll();
+            }
+            catch
+            {
+                // never crash on hotkey
+            }
+        }
+
+        private List<TextBox> GetEditableTextBoxesOrdered()
+        {
+            var list = new List<TextBox>();
+            CollectTextBoxes(this, list);
+
+            // Only the fields workers actually type into
+            return list
+                .Where(tb => tb != null && tb.Visible && tb.Enabled && !tb.ReadOnly)
+                .OrderBy(tb => tb.TabIndex)
+                .ThenBy(tb => tb.Top)
+                .ThenBy(tb => tb.Left)
+                .ToList();
+        }
+
+        private static void CollectTextBoxes(Control parent, List<TextBox> list)
+        {
+            foreach (Control c in parent.Controls)
+            {
+                var tb = c as TextBox;
+                if (tb != null) list.Add(tb);
+
+                if (c.HasChildren) CollectTextBoxes(c, list);
+            }
+        }
+
+        private static Control GetFocusedControl(Control control)
+        {
+            // Walk down the ActiveControl chain (handles containers/panels/etc.)
+            var cc = control as ContainerControl;
+
+            while (cc != null && cc.ActiveControl != null)
+            {
+                control = cc.ActiveControl;
+                cc = control as ContainerControl;
+            }
+
+            return control;
+        }
+
+        private void HotkeyForceRestart()
+        {
+            // Prevent accidental restart if the key is held
+            if (IsDebounced(ref _lastHotkeyRestartUtc, HotkeyDebounceRestartMs)) return;
+
+            try { ShowStatusPrinting("Restarting..."); } catch { }
+
+            try
+            {
+                // Restart after this handler returns (safer than restarting mid-key processing)
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    try
+                    {
+                        Application.Restart();
+                    }
+                    catch
+                    {
+                        try { Process.Start(Application.ExecutablePath); } catch { }
+                        try { Environment.Exit(0); } catch { }
+                    }
+                });
+            }
+            catch
+            {
+                try { Process.Start(Application.ExecutablePath); } catch { }
+                try { Environment.Exit(0); } catch { }
+            }
         }
 
         private void ApplyModernUi()
@@ -211,7 +437,12 @@ namespace shipping_labels
 
                 if (parts.Count == 0) return false;
 
-                printerName = parts[0];
+                // Prefer 4XL if present, otherwise first available
+                var preferred = parts.FirstOrDefault(p =>
+                    p.IndexOf("4XL", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    p.IndexOf("LabelWriter 4XL", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                printerName = preferred ?? parts[0];
                 return true;
             }
             catch
@@ -379,6 +610,13 @@ namespace shipping_labels
                 // Quick "is a printer there?" check (best-effort)
                 if (!TryGetAnyDymoPrinter(out string printerName))
                     throw new Exception("No DYMO printer detected. Check USB/power and DYMO drivers.");
+
+                // Force DYMO COM to target the selected printer (critical when multiple DYMO printers exist)
+                if (!string.IsNullOrWhiteSpace(printerName))
+                {
+                    if (!TryInvokeCom(addIn, "SelectPrinter", printerName))
+                        TryInvokeCom(addIn, "SelectPrinter2", printerName); // some installs use SelectPrinter2
+                }
 
                 // Show the printer name (if available)
                 if (!string.IsNullOrWhiteSpace(printerName) && lblPrinterStatus != null)

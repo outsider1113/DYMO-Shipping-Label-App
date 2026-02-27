@@ -1,4 +1,5 @@
-﻿namespace shipping_labels
+﻿// Form1.Designer.cs
+namespace shipping_labels
 {
     partial class Form1
     {
