@@ -1,5 +1,4 @@
-﻿// Form1.cs
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -33,6 +32,9 @@ namespace shipping_labels
         private const int HotkeyDebouncePrintMs = 900;
         private const int HotkeyDebounceRestartMs = 1500;
 
+        private bool _updatingProductCode;
+        private bool _updatingHeatText;
+
         public Form1()
         {
             InitializeComponent();
@@ -51,7 +53,13 @@ namespace shipping_labels
         {
             try { WindowState = FormWindowState.Maximized; } catch { }
             ApplyResponsiveSizing();
-            try { txtProductCode.Focus(); txtProductCode.SelectAll(); } catch { }
+
+            try
+            {
+                txtProductCode.Focus();
+                txtProductCode.SelectAll();
+            }
+            catch { }
         }
 
         private void Form1_Resize(object sender, EventArgs e)
@@ -59,35 +67,53 @@ namespace shipping_labels
             ApplyResponsiveSizing();
         }
 
+        // ── Read copies value safely — defaults to 1 if blank/invalid ────────
+        private int GetCopiesValue()
+        {
+            int val;
+            if (int.TryParse((txtCopies.Text ?? "").Trim(), out val) && val >= 1 && val <= 99)
+                return val;
+            return 1;
+        }
+
         private void ConfigureFields()
         {
+            ConfigureSingleLineLook(txtProductCode);
+            ConfigureSingleLineLook(txtHeatId);
+            ConfigureSingleLineLook(txtGross);
+            ConfigureSingleLineLook(txtTare);
+            ConfigureSingleLineLook(txtNet);
+            ConfigureSingleLineLook(txtPrintProductId);
+            ConfigureSingleLineLook(txtDescription);
+
             txtNet.ReadOnly = true;
             txtNet.TabStop = false;
             txtNet.Cursor = Cursors.Default;
-            txtNet.BorderStyle = BorderStyle.FixedSingle;
             txtNet.BackColor = SystemColors.Window;
-            txtNet.TextAlign = HorizontalAlignment.Right;
+            txtNet.TextAlign = HorizontalAlignment.Left;
 
             txtPrintProductId.ReadOnly = true;
             txtPrintProductId.TabStop = false;
             txtPrintProductId.Cursor = Cursors.Default;
-            txtPrintProductId.BorderStyle = BorderStyle.FixedSingle;
             txtPrintProductId.BackColor = SystemColors.Window;
+            txtPrintProductId.TextAlign = HorizontalAlignment.Left;
 
             txtDescription.ReadOnly = true;
             txtDescription.TabStop = false;
-            txtDescription.Multiline = false;
-            txtDescription.WordWrap = false;
-            txtDescription.ScrollBars = ScrollBars.None;
             txtDescription.Cursor = Cursors.Default;
-            txtDescription.BorderStyle = BorderStyle.FixedSingle;
             txtDescription.BackColor = Color.FromArgb(245, 245, 245);
-            txtDescription.ForeColor = Color.Black;
+            txtDescription.ForeColor = Color.FromArgb(35, 35, 35);
+            txtDescription.TextAlign = HorizontalAlignment.Left;
 
-            numCopies.Minimum = 1;
-            numCopies.Maximum = 99;
-            if (numCopies.Value < 1 || numCopies.Value > 99) numCopies.Value = 1;
-            numCopies.TextAlign = HorizontalAlignment.Right;
+            // txtCopies — digits only, 1-99
+            txtCopies.Text = "1";
+            txtCopies.TextAlign = HorizontalAlignment.Center;
+            txtCopies.BorderStyle = BorderStyle.FixedSingle;
+
+            txtProductCode.MaxLength = 20;
+            txtHeatId.MaxLength = 16;
+            txtGross.MaxLength = 20;
+            txtTare.MaxLength = 20;
 
             lblStatus.Text = "";
             lblStatus.Padding = new Padding(14, 0, 14, 0);
@@ -95,17 +121,29 @@ namespace shipping_labels
             lblStatus.ForeColor = Color.Black;
         }
 
+        private static void ConfigureSingleLineLook(TextBox tb)
+        {
+            if (tb == null) return;
+            tb.Multiline = true;
+            tb.AcceptsReturn = false;
+            tb.WordWrap = false;
+            tb.ScrollBars = ScrollBars.None;
+            tb.BorderStyle = BorderStyle.FixedSingle;
+            tb.TextAlign = HorizontalAlignment.Left;
+        }
+
         private void ApplyModernUi()
         {
             DoubleBuffered = true;
-            BackColor = Color.FromArgb(240, 243, 248);
-            Font = new Font("Segoe UI", 12f, FontStyle.Regular);
+            BackColor = Color.FromArgb(238, 241, 246);
+            Font = new Font("Segoe UI", 14f, FontStyle.Bold);
             FormBorderStyle = FormBorderStyle.Sizable;
             MaximizeBox = true;
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(980, 700);
+            MinimumSize = new Size(1180, 780);
 
-            pnlCard.BackColor = Color.White;
+            if (pnlCard != null)
+                pnlCard.BackColor = Color.White;
 
             StyleButton(btnPrint, Color.FromArgb(30, 136, 229), Color.White);
             StyleButton(btnClear, Color.FromArgb(97, 97, 97), Color.White);
@@ -126,136 +164,129 @@ namespace shipping_labels
                 tlpForm.SuspendLayout();
                 tlpActions.SuspendLayout();
 
-                Rectangle working = Screen.FromControl(this).WorkingArea;
-                float dpiScale = Math.Max(1f, DeviceDpi / 96f);
+                int clientW = Math.Max(ClientSize.Width, 1024);
+                int clientH = Math.Max(ClientSize.Height, 700);
 
-                int workW = Math.Max(working.Width, 1100);
-                int workH = Math.Max(working.Height, 760);
-
-                int outerPadding = Clamp((int)Math.Round(workW * 0.012f), 12, 26);
-                int cardPadding = Clamp((int)Math.Round(workW * 0.018f), 18, 34);
-                int headerGap = Clamp((int)Math.Round(workH * 0.012f), 10, 18);
+                int outerPadding = 12;
+                int cardPadding = 14;
 
                 tlpRoot.Padding = new Padding(outerPadding);
-                tlpHeader.Margin = new Padding(0, 0, 0, headerGap);
                 pnlCard.Padding = new Padding(cardPadding);
 
-                float titleFontSize = ClampF(workH / 36f, 18f, 28f);
-                float headerStatusFontSize = ClampF(workH / 62f, 11f, 16f);
-                float labelFontSize = ClampF(workH / 58f, 12f, 18f);
-                float inputFontSize = ClampF(workH / 44f, 15f, 24f);
-                float buttonFontSize = ClampF(workH / 46f, 15f, 22f);
-                float copiesFontSize = ClampF(workH / 54f, 13f, 19f);
-                float statusFontSize = ClampF(workH / 64f, 12f, 17f);
+                // ── Hard-reserved heights ─────────────────────────────────────────
+                int statusBarH = 48;
+                int headerH = 44;
+                int actionBarH = 110;
+                int cardVPad = cardPadding * 2;
 
-                Font baseFont = new Font("Segoe UI", labelFontSize, FontStyle.Regular);
+                // Keep tlpCard row 1 in sync
+                tlpCard.RowStyles[1].SizeType = SizeType.Absolute;
+                tlpCard.RowStyles[1].Height = actionBarH;
+
+                // ── Form rows get everything left ─────────────────────────────────
+                int formAvail = clientH - statusBarH - headerH - actionBarH
+                                - cardVPad - outerPadding * 2 - 24;
+                formAvail = Math.Max(formAvail, 280);
+
+                int rowH = formAvail / 7;
+                int marginV = Math.Max(3, rowH / 18);
+                int boxH = Math.Max(rowH - marginV * 2, 20);
+
+                tlpForm.ColumnStyles[0].Width = 20f;
+                tlpForm.ColumnStyles[1].Width = 80f;
+
+                // ── Fonts ─────────────────────────────────────────────────────────
+                float inputFontSize = ClampF(boxH * 0.42f, 12f, 9999f);
+                float labelColPx = clientW * 0.20f - cardPadding - 8f;
+                float labelByWidth = labelColPx / (11f * 0.60f);
+                float labelFontSize = ClampF(Math.Min(labelByWidth, 18f), 10f, 18f);
+                float btnFontSize = 15f;
+                float copiesLblFont = 16f;
+                float copiesTxtFont = ClampF(actionBarH * 0.45f, 14f, 32f);
+                float titleFontSize = ClampF(headerH * 0.45f, 12f, 22f);
+                float printerFontSize = ClampF(headerH * 0.25f, 9f, 14f);
+                float statusFontSize = 11f;
+
+                lblTitle.Font = new Font("Segoe UI", titleFontSize, FontStyle.Bold);
+                lblPrinterStatus.Font = new Font("Segoe UI", printerFontSize, FontStyle.Bold);
+                lblStatus.Font = new Font("Segoe UI", statusFontSize, FontStyle.Bold);
+
                 Font labelFont = new Font("Segoe UI", labelFontSize, FontStyle.Bold);
-                Font titleFont = new Font("Segoe UI", titleFontSize, FontStyle.Bold);
-                Font printerFont = new Font("Segoe UI", headerStatusFontSize, FontStyle.Bold);
-                Font inputFont = new Font("Segoe UI", inputFontSize, FontStyle.Regular);
-                Font calcFont = new Font("Segoe UI", inputFontSize + 1f, FontStyle.Bold);
-                Font descFont = new Font("Segoe UI", Math.Max(12f, inputFontSize - 2f), FontStyle.Italic);
-                Font buttonFont = new Font("Segoe UI", buttonFontSize, FontStyle.Bold);
-                Font statusFont = new Font("Segoe UI", statusFontSize, FontStyle.Bold);
-                Font copiesFont = new Font("Segoe UI", copiesFontSize, FontStyle.Bold);
-                Font copiesValueFont = new Font("Segoe UI", copiesFontSize, FontStyle.Regular);
-
-                Font = baseFont;
-                lblTitle.Font = titleFont;
-                lblPrinterStatus.Font = printerFont;
-                lblStatus.Font = statusFont;
+                Font inputFont = new Font("Segoe UI", inputFontSize, FontStyle.Bold);
+                Font btnFont = new Font("Segoe UI", btnFontSize, FontStyle.Bold);
 
                 foreach (Label lbl in GetAllLabels(this))
                 {
-                    if (lbl == lblTitle || lbl == lblPrinterStatus || lbl == lblStatus) continue;
+                    if (lbl == lblTitle || lbl == lblPrinterStatus ||
+                        lbl == lblStatus || lbl == lblCopies) continue;
                     lbl.Font = labelFont;
                 }
 
+                // Apply inputFont to all textboxes EXCEPT txtCopies (handled separately)
                 foreach (TextBox tb in GetAllTextBoxes(this))
                 {
+                    if (tb == txtCopies) continue;
                     tb.Font = inputFont;
                 }
 
-                txtNet.Font = calcFont;
-                txtPrintProductId.Font = calcFont;
-                txtDescription.Font = descFont;
-                txtDescription.ForeColor = Color.FromArgb(60, 60, 60);
+                btnPrint.Font = btnFont;
+                btnClear.Font = btnFont;
+                lblCopies.Font = new Font("Segoe UI", copiesLblFont, FontStyle.Bold);
+                txtCopies.Font = new Font("Segoe UI", copiesTxtFont, FontStyle.Bold);
 
-                btnPrint.Font = buttonFont;
-                btnClear.Font = buttonFont;
-                lblCopies.Font = copiesFont;
-                numCopies.Font = copiesValueFont;
-
-                int cardPreferredWidth = Clamp((int)Math.Round(workW * 0.82f), 930, 1450);
-                int sidePercent = 8;
-                if (workW < 1350) sidePercent = 4;
-                if (workW < 1180) sidePercent = 2;
-
-                tlpShell.ColumnStyles[0].Width = sidePercent;
-                tlpShell.ColumnStyles[1].Width = 100 - (sidePercent * 2);
-                tlpShell.ColumnStyles[2].Width = sidePercent;
-
-                int labelWidth = Clamp((int)Math.Round(cardPreferredWidth * 0.28f), 220, 340);
-                tlpForm.ColumnStyles[0].Width = labelWidth;
-
-                int usableHeight = Math.Max(440, pnlCard.ClientSize.Height - 10);
-                int actionsHeight = Clamp((int)Math.Round(usableHeight * 0.15f), 84, 140);
-                int formHeight = Math.Max(300, usableHeight - actionsHeight - 12);
-
-                int mainRow = Clamp(formHeight / 6, 58, 95);
-                int descRow = Clamp(formHeight - (mainRow * 6), 42, 74);
-
-                for (int i = 0; i < 6; i++)
-                {
-                    tlpForm.RowStyles[i].SizeType = SizeType.Absolute;
-                    tlpForm.RowStyles[i].Height = mainRow;
-                }
-
-                tlpForm.RowStyles[6].SizeType = SizeType.Absolute;
-                tlpForm.RowStyles[6].Height = descRow;
-
-                tlpCard.RowStyles[0].SizeType = SizeType.Absolute;
-                tlpCard.RowStyles[0].Height = mainRow * 6 + descRow + 12;
-                tlpCard.RowStyles[1].SizeType = SizeType.Absolute;
-                tlpCard.RowStyles[1].Height = actionsHeight;
-
-                int textHeight = Clamp((int)Math.Round(mainRow * 0.58f), 36, 62);
-                int descHeight = Clamp((int)Math.Round(descRow * 0.52f), 30, 50);
-                int buttonHeight = Clamp((int)Math.Round(actionsHeight * 0.78f), 72, 118);
-                int copiesWidth = Clamp((int)Math.Round(cardPreferredWidth * 0.16f), 120, 180);
-                int printerWidth = Clamp((int)Math.Round(cardPreferredWidth * 0.22f), 165, 260);
-                int fieldMarginV = Clamp((mainRow - textHeight) / 2, 8, 18);
-
-                lblPrinterStatus.Width = printerWidth;
+                // ── Textbox sizing ────────────────────────────────────────────────
+                int fontLineH = (int)Math.Round(inputFontSize * 1.34f);
+                int padTop = Math.Max(2, (boxH - fontLineH) / 2);
 
                 foreach (TextBox tb in GetAllTextBoxes(this))
                 {
-                    int h = tb == txtDescription ? descHeight : textHeight;
-                    tb.MinimumSize = new Size(0, h);
-                    tb.Margin = new Padding(0, fieldMarginV, 0, fieldMarginV);
+                    if (tb == txtCopies) continue;
+                    tb.Dock = DockStyle.None;
+                    tb.Anchor = AnchorStyles.Left | AnchorStyles.Right
+                                     | AnchorStyles.Top | AnchorStyles.Bottom;
+                    tb.Margin = new Padding(0, marginV, 6, marginV);
+                    tb.MinimumSize = new Size(0, boxH);
+                    tb.Height = boxH;
+                    tb.Padding = new Padding(4, padTop, 4, 0);
                 }
 
-                txtProductCode.MaxLength = 20;
-                txtHeatId.MaxLength = 50;
-                txtGross.MaxLength = 20;
-                txtTare.MaxLength = 20;
+                // ── Action bar ────────────────────────────────────────────────────
+                int btnH = 80;
+                int btnW = Math.Max(180, (int)Math.Round(clientW * 0.10f));
+                int copiesW = Math.Max(300, (int)Math.Round(clientW * 0.15f));
 
-                btnPrint.MinimumSize = new Size(190, buttonHeight);
-                btnClear.MinimumSize = new Size(190, buttonHeight);
+                // Keep tlpActions column 4 Absolute width in sync
+                tlpActions.ColumnStyles[4].SizeType = SizeType.Absolute;
+                tlpActions.ColumnStyles[4].Width = copiesW;
 
-                numCopies.MinimumSize = new Size(copiesWidth, textHeight);
-                numCopies.Width = copiesWidth;
-                lblCopies.Margin = new Padding(0, 0, 16, 0);
+                // Keep tlpActions row height in sync
+                tlpActions.RowStyles[0].SizeType = SizeType.Absolute;
+                tlpActions.RowStyles[0].Height = actionBarH;
 
-                tlpActions.ColumnStyles[0].Width = 30F;
-                tlpActions.ColumnStyles[1].Width = 30F;
-                tlpActions.ColumnStyles[2].Width = 20F;
-                tlpActions.ColumnStyles[4].Width = 20F;
+                btnPrint.MinimumSize = new Size(btnW, btnH);
+                btnPrint.Size = new Size(btnW, btnH);
+                btnClear.MinimumSize = new Size(btnW, btnH);
+                btnClear.Size = new Size(btnW, btnH);
+                btnPrint.Margin = new Padding(0, 0, 14, 0);
+                btnClear.Margin = new Padding(0);
 
-                lblStatus.MinimumSize = new Size(0, Clamp((int)Math.Round(textHeight * 1.15f), 40, 62));
-                lblStatus.Padding = new Padding(14, 0, 14, 0);
+                // txtCopies — sized explicitly, no layout engine games
+                int copiesTxtH = btnH;   // same height as buttons
+                int copiesPadTop = Math.Max(2, (copiesTxtH - (int)Math.Round(copiesTxtFont * 1.34f)) / 2);
+                txtCopies.Dock = DockStyle.None;
+                txtCopies.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+                txtCopies.Width = copiesW;
+                txtCopies.Height = copiesTxtH;
+                txtCopies.MinimumSize = new Size(copiesW, copiesTxtH);
+                txtCopies.Margin = new Padding(8, (actionBarH - copiesTxtH) / 2, 0, 0);
+                txtCopies.Padding = new Padding(4, copiesPadTop, 4, 0);
 
-                tlpForm.Margin = new Padding(0, 0, 0, 12);
+                // Center "Copies" label vertically against the textbox
+                lblCopies.Margin = new Padding(0, (actionBarH - 30) / 2, 12, 0);
+
+                lblStatus.MinimumSize = new Size(0, statusBarH - 8);
+                tlpHeader.Margin = new Padding(0, 0, 0, 6);
+                tlpForm.Margin = new Padding(0, 0, 0, 6);
             }
             finally
             {
@@ -290,7 +321,6 @@ namespace shipping_labels
             {
                 Label lbl = c as Label;
                 if (lbl != null) yield return lbl;
-
                 foreach (Label child in GetAllLabels(c))
                     yield return child;
             }
@@ -302,7 +332,6 @@ namespace shipping_labels
             {
                 TextBox tb = c as TextBox;
                 if (tb != null) yield return tb;
-
                 foreach (TextBox child in GetAllTextBoxes(c))
                     yield return child;
             }
@@ -311,7 +340,6 @@ namespace shipping_labels
         private void StyleButton(Button button, Color backColor, Color foreColor)
         {
             if (button == null) return;
-
             button.UseVisualStyleBackColor = false;
             button.FlatStyle = FlatStyle.Flat;
             button.FlatAppearance.BorderSize = 0;
@@ -323,8 +351,23 @@ namespace shipping_labels
         private void WireInputGuards()
         {
             txtProductCode.KeyPress += DigitsOnly_KeyPress;
+            txtHeatId.KeyPress += DigitsOnly_KeyPress;
             txtGross.KeyPress += DecimalInput_KeyPress;
             txtTare.KeyPress += DecimalInput_KeyPress;
+            txtCopies.KeyPress += CopiesInput_KeyPress;
+
+            txtProductCode.KeyDown += SingleLineInput_KeyDown;
+            txtHeatId.KeyDown += SingleLineInput_KeyDown;
+            txtGross.KeyDown += SingleLineInput_KeyDown;
+            txtTare.KeyDown += SingleLineInput_KeyDown;
+        }
+
+        private void SingleLineInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+            FocusAdjacentEditableTextBox(false);
         }
 
         private void DigitsOnly_KeyPress(object sender, KeyPressEventArgs e)
@@ -334,19 +377,24 @@ namespace shipping_labels
             e.Handled = true;
         }
 
+        private void CopiesInput_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            // Allow digits only; block everything else except control chars
+            if (char.IsControl(e.KeyChar)) return;
+            if (char.IsDigit(e.KeyChar)) return;
+            e.Handled = true;
+        }
+
         private void DecimalInput_KeyPress(object sender, KeyPressEventArgs e)
         {
             TextBox box = sender as TextBox;
             if (box == null) return;
-
             if (char.IsControl(e.KeyChar)) return;
             if (char.IsDigit(e.KeyChar)) return;
-
             if (e.KeyChar == '.')
             {
                 if (box.Text.IndexOf('.') < 0) return;
             }
-
             e.Handled = true;
         }
 
@@ -369,13 +417,11 @@ namespace shipping_labels
         private bool IsDebounced(ref DateTime lastUtc, int debounceMs)
         {
             DateTime now = DateTime.UtcNow;
-
             if (lastUtc != DateTime.MinValue)
             {
                 double ms = (now - lastUtc).TotalMilliseconds;
                 if (ms >= 0 && ms < debounceMs) return true;
             }
-
             lastUtc = now;
             return false;
         }
@@ -383,7 +429,6 @@ namespace shipping_labels
         private void HotkeyPrint()
         {
             if (IsDebounced(ref _lastHotkeyPrintUtc, HotkeyDebouncePrintMs)) return;
-
             try
             {
                 if (btnPrint != null && btnPrint.Enabled) btnPrint.PerformClick();
@@ -395,11 +440,8 @@ namespace shipping_labels
         {
             try
             {
-                decimal value = copies;
-                if (value < numCopies.Minimum) value = numCopies.Minimum;
-                if (value > numCopies.Maximum) value = numCopies.Maximum;
-                numCopies.Value = value;
-                ShowStatus("Copies set to " + (int)numCopies.Value, false);
+                txtCopies.Text = copies.ToString();
+                ShowStatus("Copies set to " + copies, false);
             }
             catch { }
         }
@@ -409,21 +451,15 @@ namespace shipping_labels
             try
             {
                 Control focused = GetFocusedControl(this);
-
                 TextBoxBase tb = focused as TextBoxBase;
                 if (tb != null)
                 {
                     if (tb.ReadOnly) return;
-                    tb.Text = "";
+                    if (tb == txtCopies)
+                        tb.Text = "1";
+                    else
+                        tb.Text = "";
                     tb.Focus();
-                    return;
-                }
-
-                NumericUpDown nud = focused as NumericUpDown;
-                if (nud != null)
-                {
-                    nud.Value = nud.Minimum;
-                    nud.Focus();
                 }
             }
             catch { }
@@ -438,31 +474,23 @@ namespace shipping_labels
 
                 Control focused = GetFocusedControl(this);
                 TextBox current = focused as TextBox;
-
                 int currentIndex = -1;
+
                 if (current != null)
                 {
                     for (int i = 0; i < boxes.Count; i++)
                     {
-                        if (ReferenceEquals(boxes[i], current))
-                        {
-                            currentIndex = i;
-                            break;
-                        }
+                        if (ReferenceEquals(boxes[i], current)) { currentIndex = i; break; }
                     }
                 }
 
                 int targetIndex;
                 if (currentIndex < 0)
-                {
                     targetIndex = previous ? boxes.Count - 1 : 0;
-                }
                 else
-                {
                     targetIndex = previous
                         ? Math.Max(0, currentIndex - 1)
                         : Math.Min(boxes.Count - 1, currentIndex + 1);
-                }
 
                 boxes[targetIndex].Focus();
                 boxes[targetIndex].SelectAll();
@@ -474,7 +502,6 @@ namespace shipping_labels
         {
             List<TextBox> list = new List<TextBox>();
             CollectTextBoxes(this, list);
-
             return list
                 .Where(tb => tb != null && tb.Visible && tb.Enabled && !tb.ReadOnly)
                 .OrderBy(tb => tb.TabIndex)
@@ -489,7 +516,6 @@ namespace shipping_labels
             {
                 TextBox tb = c as TextBox;
                 if (tb != null) list.Add(tb);
-
                 if (c.HasChildren) CollectTextBoxes(c, list);
             }
         }
@@ -502,24 +528,18 @@ namespace shipping_labels
                 control = cc.ActiveControl;
                 cc = control as ContainerControl;
             }
-
             return control;
         }
 
         private void HotkeyForceRestart()
         {
             if (IsDebounced(ref _lastHotkeyRestartUtc, HotkeyDebounceRestartMs)) return;
-
             try { ShowStatusPrinting("Restarting..."); } catch { }
-
             try
             {
                 BeginInvoke((MethodInvoker)delegate
                 {
-                    try
-                    {
-                        Application.Restart();
-                    }
+                    try { Application.Restart(); }
                     catch
                     {
                         try { Process.Start(Application.ExecutablePath); } catch { }
@@ -553,7 +573,6 @@ namespace shipping_labels
         {
             string printerName;
             bool ok = TryGetAnyDymoPrinter(out printerName);
-
             if (lblPrinterStatus == null) return;
 
             if (ok)
@@ -561,7 +580,6 @@ namespace shipping_labels
                 string shown = string.IsNullOrWhiteSpace(printerName)
                     ? "OK"
                     : "OK (" + Ellipsize(printerName, 34) + ")";
-
                 lblPrinterStatus.Text = "Printer: " + shown;
                 lblPrinterStatus.ForeColor = Color.DarkGreen;
                 try { _printerToolTip.SetToolTip(lblPrinterStatus, printerName ?? ""); } catch { }
@@ -586,7 +604,6 @@ namespace shipping_labels
         {
             printerName = null;
             object addIn = null;
-
             try
             {
                 addIn = CreateComFromProgIds(new[] { "Dymo.DymoAddIn", "DymoAddIn", "DYMO.DymoAddIn" });
@@ -608,29 +625,20 @@ namespace shipping_labels
                 printerName = preferred ?? parts[0];
                 return true;
             }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                ReleaseComObjectQuietly(addIn);
-            }
+            catch { return false; }
+            finally { ReleaseComObjectQuietly(addIn); }
         }
 
         private void ShowStatus(string message, bool isError)
         {
             if (lblStatus == null) return;
-
             lblStatus.Text = message ?? "";
-
             if (string.IsNullOrWhiteSpace(lblStatus.Text))
             {
                 lblStatus.BackColor = Color.Gainsboro;
                 lblStatus.ForeColor = Color.Black;
                 return;
             }
-
             if (isError)
             {
                 lblStatus.BackColor = Color.Firebrick;
@@ -646,7 +654,6 @@ namespace shipping_labels
         private void ShowStatusPrinting(string message)
         {
             if (lblStatus == null) return;
-
             lblStatus.Text = message ?? "";
             lblStatus.BackColor = Color.Goldenrod;
             lblStatus.ForeColor = Color.Black;
@@ -669,10 +676,7 @@ namespace shipping_labels
                 object result = InvokeCom(target, methodName, args);
                 return result == null ? null : result.ToString();
             }
-            catch
-            {
-                return null;
-            }
+            catch { return null; }
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -692,8 +696,20 @@ namespace shipping_labels
 
         private void txtProductCode_TextChanged(object sender, EventArgs e)
         {
-            string code = NormalizeCode(txtProductCode.Text);
+            if (!_updatingProductCode)
+            {
+                string digits = NormalizeDigits(txtProductCode.Text);
+                if (txtProductCode.Text != digits)
+                {
+                    _updatingProductCode = true;
+                    int start = digits.Length;
+                    txtProductCode.Text = digits;
+                    txtProductCode.SelectionStart = Math.Min(start, txtProductCode.TextLength);
+                    _updatingProductCode = false;
+                }
+            }
 
+            string code = NormalizeDigits(txtProductCode.Text);
             if (string.IsNullOrWhiteSpace(code))
             {
                 txtPrintProductId.Text = "";
@@ -717,40 +733,53 @@ namespace shipping_labels
             }
         }
 
-        private void txtGross_TextChanged(object sender, EventArgs e)
+        private void txtHeatId_TextChanged(object sender, EventArgs e)
         {
-            RecalcNet();
+            ApplyHeatTextboxFormatting();
         }
 
-        private void txtTare_TextChanged(object sender, EventArgs e)
+        private void ApplyHeatTextboxFormatting()
         {
-            RecalcNet();
+            if (_updatingHeatText) return;
+            string digits = NormalizeDigits(txtHeatId.Text);
+            string formatted = FormatHeatId(digits);
+            if (txtHeatId.Text == formatted) return;
+            _updatingHeatText = true;
+            txtHeatId.Text = formatted;
+            txtHeatId.SelectionStart = txtHeatId.TextLength;
+            _updatingHeatText = false;
         }
+
+        private static string FormatHeatId(string input)
+        {
+            string digits = NormalizeDigits(input);
+            if (string.IsNullOrWhiteSpace(digits)) return "";
+            if (digits.Length == 1) return digits;
+            return digits.Substring(0, 1) + "-" + digits.Substring(1);
+        }
+
+        private string GetFormattedHeatForPrint()
+        {
+            return FormatHeatId(txtHeatId.Text);
+        }
+
+        private void txtGross_TextChanged(object sender, EventArgs e) { RecalcNet(); }
+        private void txtTare_TextChanged(object sender, EventArgs e) { RecalcNet(); }
 
         private void RecalcNet()
         {
-            decimal gross;
-            decimal tare;
-
+            decimal gross, tare;
             if (!TryParseDecimal(txtGross.Text, out gross) || !TryParseDecimal(txtTare.Text, out tare))
             {
                 txtNet.Text = "";
                 return;
             }
-
             decimal net = gross - tare;
             txtNet.Text = net.ToString("0.###", CultureInfo.InvariantCulture);
         }
 
-        private void btnClear_Click(object sender, EventArgs e)
-        {
-            ClearAllFields();
-        }
-
-        private void btnPrint_Click(object sender, EventArgs e)
-        {
-            PrintLabelsFromUi();
-        }
+        private void btnClear_Click(object sender, EventArgs e) { ClearAllFields(); }
+        private void btnPrint_Click(object sender, EventArgs e) { PrintLabelsFromUi(); }
 
         private void PrintLabelsFromUi()
         {
@@ -760,14 +789,10 @@ namespace shipping_labels
 
             try
             {
-                int copies = (numCopies != null) ? (int)numCopies.Value : 1;
-                if (copies < 1)
-                {
-                    ShowStatus("Copies must be at least 1.", true);
-                    return;
-                }
+                int copies = GetCopiesValue();
+                if (copies < 1) { ShowStatus("Copies must be at least 1.", true); return; }
 
-                string code = NormalizeCode(txtProductCode.Text);
+                string code = NormalizeDigits(txtProductCode.Text);
                 if (string.IsNullOrWhiteSpace(code))
                     throw new Exception("Enter a Product Code.");
 
@@ -775,16 +800,13 @@ namespace shipping_labels
                 if (!_productsByCode.TryGetValue(code, out info))
                     throw new Exception("Product Code not found in productIDs.csv.");
 
-                string heat = (txtHeatId.Text ?? "").Trim();
+                string heat = GetFormattedHeatForPrint();
                 if (string.IsNullOrWhiteSpace(heat))
                     throw new Exception("Enter a Heat #.");
 
-                decimal gross;
-                decimal tare;
-
+                decimal gross, tare;
                 if (!TryParseDecimal(txtGross.Text, out gross))
                     throw new Exception("Gross must be a number.");
-
                 if (!TryParseDecimal(txtTare.Text, out tare))
                     throw new Exception("Tare must be a number.");
 
@@ -827,11 +849,6 @@ namespace shipping_labels
                 TryInvokeCom(addIn, "EndPrintJob");
                 printJobStarted = false;
 
-                txtGross.Text = "";
-                txtTare.Text = "";
-                txtNet.Text = "";
-                txtGross.Focus();
-
                 ShowStatus("Printed " + copies + " label(s)", false);
             }
             catch (COMException ex)
@@ -847,9 +864,7 @@ namespace shipping_labels
             finally
             {
                 if (printJobStarted && addIn != null)
-                {
                     try { TryInvokeCom(addIn, "EndPrintJob"); } catch { }
-                }
 
                 ReleaseComObjectQuietly(labels);
                 ReleaseComObjectQuietly(addIn);
@@ -867,9 +882,7 @@ namespace shipping_labels
                 txtNet.Text = "";
                 txtPrintProductId.Text = "";
                 txtDescription.Text = "";
-
-                if (numCopies != null) numCopies.Value = 1;
-
+                txtCopies.Text = "1";
                 ShowStatus("Cleared.", false);
                 txtProductCode.Focus();
             }
@@ -879,7 +892,6 @@ namespace shipping_labels
         private void LoadProductsFromCsv()
         {
             _productsByCode.Clear();
-
             string csvPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "productIDs.csv");
             if (!File.Exists(csvPath))
                 throw new FileNotFoundException("productIDs.csv not found next to EXE.", csvPath);
@@ -890,7 +902,6 @@ namespace shipping_labels
                 if (headerLine == null) throw new Exception("productIDs.csv is empty.");
 
                 List<string> headers = SplitCsvLine(headerLine).Select(h => (h ?? "").Trim()).ToList();
-
                 int idxCode = 0;
                 int idxName = IndexOfHeader(headers, "Product Name");
                 int idxDesc = IndexOfHeader(headers, "Product Description");
@@ -902,13 +913,10 @@ namespace shipping_labels
                 {
                     string line = sr.ReadLine();
                     if (string.IsNullOrWhiteSpace(line)) continue;
-
                     List<string> cols = SplitCsvLine(line);
                     if (cols.Count <= Math.Max(idxDesc, Math.Max(idxName, idxCode))) continue;
-
-                    string code = NormalizeCode(cols[idxCode]);
+                    string code = NormalizeDigits(cols[idxCode]);
                     if (string.IsNullOrWhiteSpace(code)) continue;
-
                     _productsByCode[code] = new ProductInfo
                     {
                         PrintedProductId = (cols[idxName] ?? "").Trim(),
@@ -921,11 +929,7 @@ namespace shipping_labels
         private static int IndexOfHeader(List<string> headers, string name)
         {
             for (int i = 0; i < headers.Count; i++)
-            {
-                if (string.Equals(headers[i], name, StringComparison.OrdinalIgnoreCase))
-                    return i;
-            }
-
+                if (string.Equals(headers[i], name, StringComparison.OrdinalIgnoreCase)) return i;
             return -1;
         }
 
@@ -934,39 +938,26 @@ namespace shipping_labels
             List<string> result = new List<string>();
             bool inQuotes = false;
             string current = "";
-
             for (int i = 0; i < line.Length; i++)
             {
                 char c = line[i];
-
                 if (c == '"')
                 {
                     if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
-                    {
-                        current += '"';
-                        i++;
-                    }
+                    { current += '"'; i++; }
                     else
-                    {
-                        inQuotes = !inQuotes;
-                    }
+                    { inQuotes = !inQuotes; }
                 }
                 else if (c == ',' && !inQuotes)
-                {
-                    result.Add(current);
-                    current = "";
-                }
+                { result.Add(current); current = ""; }
                 else
-                {
-                    current += c;
-                }
+                { current += c; }
             }
-
             result.Add(current);
             return result;
         }
 
-        private static string NormalizeCode(string input)
+        private static string NormalizeDigits(string input)
         {
             if (input == null) return "";
             return Regex.Replace(input.Trim(), @"\D", "");
@@ -984,7 +975,6 @@ namespace shipping_labels
             {
                 Type type = Type.GetTypeFromProgID(progId, false);
                 if (type == null) continue;
-
                 try
                 {
                     object instance = Activator.CreateInstance(type);
@@ -992,7 +982,6 @@ namespace shipping_labels
                 }
                 catch { }
             }
-
             throw new Exception(
                 "Could not create DYMO COM object. Tried:\n- " + string.Join("\n- ", progIds) +
                 "\n\nDYMO Label Software components may not be registered on this PC.");
@@ -1003,31 +992,19 @@ namespace shipping_labels
             if (TryInvokeCom(labels, "SetField", name, value)) return;
             if (TryInvokeCom(labels, "SetObjectText", name, value)) return;
             if (TryInvokeCom(labels, "SetText", name, value)) return;
-
             throw new Exception("Could not set label field '" + name + "'.");
         }
 
         private static object InvokeCom(object target, string methodName, params object[] args)
         {
             return target.GetType().InvokeMember(
-                methodName,
-                BindingFlags.InvokeMethod,
-                null,
-                target,
-                args);
+                methodName, BindingFlags.InvokeMethod, null, target, args);
         }
 
         private static bool TryInvokeCom(object target, string methodName, params object[] args)
         {
-            try
-            {
-                InvokeCom(target, methodName, args);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
+            try { InvokeCom(target, methodName, args); return true; }
+            catch { return false; }
         }
     }
 }
