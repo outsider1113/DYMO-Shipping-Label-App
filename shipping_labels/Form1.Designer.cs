@@ -32,11 +32,9 @@ namespace shipping_labels
             this.btnPrint = new System.Windows.Forms.Button();
             this.btnClear = new System.Windows.Forms.Button();
             this.lblStatus = new System.Windows.Forms.Label();
-
             this.lblCopies = new System.Windows.Forms.Label();
             this.numCopies = new System.Windows.Forms.NumericUpDown();
             this.lblPrinterStatus = new System.Windows.Forms.Label();
-
             ((System.ComponentModel.ISupportInitialize)(this.numCopies)).BeginInit();
             this.SuspendLayout();
             // 
@@ -148,16 +146,17 @@ namespace shipping_labels
             this.lblDescription.TabIndex = 12;
             this.lblDescription.Text = "Description:";
             // 
-            // txtDescription
+            // txtDescription (ONE LINE)
             // 
             this.txtDescription.Location = new System.Drawing.Point(128, 193);
-            this.txtDescription.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom)
-            | System.Windows.Forms.AnchorStyles.Left)
+            this.txtDescription.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left)
             | System.Windows.Forms.AnchorStyles.Right)));
-            this.txtDescription.Multiline = true;
+            this.txtDescription.Multiline = false;
             this.txtDescription.Name = "txtDescription";
-            this.txtDescription.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
-            this.txtDescription.Size = new System.Drawing.Size(740, 290);
+            this.txtDescription.ReadOnly = true;
+            this.txtDescription.TabStop = false;
+            this.txtDescription.ScrollBars = System.Windows.Forms.ScrollBars.None;
+            this.txtDescription.Size = new System.Drawing.Size(740, 20);
             this.txtDescription.TabIndex = 13;
             // 
             // btnPrint
@@ -224,7 +223,8 @@ namespace shipping_labels
             // 
             // Form1
             // 
-            this.ClientSize = new System.Drawing.Size(900, 600);
+            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
+            this.ClientSize = new System.Drawing.Size(1000, 700);
             this.Controls.Add(this.lblPrinterStatus);
             this.Controls.Add(this.numCopies);
             this.Controls.Add(this.lblCopies);

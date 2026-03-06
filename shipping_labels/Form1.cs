@@ -21,63 +21,68 @@ namespace shipping_labels
             public string Description;      // CSV "Product Description"
         }
 
-        // key = 4-digit code in first CSV column (header is blank)
         private readonly Dictionary<string, ProductInfo> _productsByCode =
             new Dictionary<string, ProductInfo>(StringComparer.OrdinalIgnoreCase);
 
-        // Force WinForms timer to avoid ambiguity
         private readonly System.Windows.Forms.Timer _printerTimer = new System.Windows.Forms.Timer();
         private const int PrinterPollIntervalMs = 1500;
-
-        // Reuse one tooltip (avoid allocating a new one every tick)
         private readonly ToolTip _printerToolTip = new ToolTip();
 
-        // --- Hotkey macros (Keychron Q0 / programmable keypad) ---
-        // Recommended to program the keypad to send F13-F20.
-        // F13: Clear ALL fields
-        // F14: Print
-        // F15: Clear current field
-        // F16: Focus previous editable textbox ("above")
-        // F17: Focus next editable textbox ("below")
-        // F18: Force restart app
-        // F19: Set copies to 6
-        // F20: Set copies to 1
         private DateTime _lastHotkeyPrintUtc = DateTime.MinValue;
         private DateTime _lastHotkeyRestartUtc = DateTime.MinValue;
         private const int HotkeyDebouncePrintMs = 900;
         private const int HotkeyDebounceRestartMs = 1500;
 
+        // -------- Responsive layout baseline --------
+        private bool _layoutBaselineCaptured = false;
+        private bool _applyingResponsiveLayout = false;
+
+        // DESIGN baseline (must match Designer ClientSize)
+        private readonly Size _designClientSize = new Size(1000, 700);
+
+        private readonly Dictionary<Control, Rectangle> _baseBounds = new Dictionary<Control, Rectangle>();
+        private readonly Dictionary<Control, float> _baseFontSize = new Dictionary<Control, float>();
+        private readonly Dictionary<Control, bool> _baseLabelAutoSize = new Dictionary<Control, bool>();
+
         public Form1()
         {
             InitializeComponent();
-
-            // Allow form-level hotkeys even when a TextBox has focus
             this.KeyPreview = true;
 
-            // UX tweaks
-            txtNet.ReadOnly = true;
+            this.Shown += Form1_Shown;
+            this.SizeChanged += Form1_SizeChanged;
 
-            // Make Net big + bold, and clearly non-editable
-            txtNet.TabStop = false;                 // skip when tabbing through fields
-            txtNet.Cursor = Cursors.Default;        // don't show I-beam cursor
+            // Net styling
+            txtNet.ReadOnly = true;
+            txtNet.TabStop = false;
+            txtNet.Cursor = Cursors.Default;
             txtNet.BorderStyle = BorderStyle.FixedSingle;
-            txtNet.BackColor = SystemColors.Window; // keep it clean/white
+            txtNet.BackColor = SystemColors.Window;
             txtNet.TextAlign = HorizontalAlignment.Right;
 
-            // TextBox needs Multiline=true to honor custom Height in WinForms
+            // Multiline so Height is respected
             txtNet.Multiline = true;
             txtNet.Width = 240;
             txtNet.Height = 32;
-
-            // Larger, bold font for visual clarity
             txtNet.Font = new Font(txtNet.Font.FontFamily, 16f, FontStyle.Bold);
 
             txtPrintProductId.ReadOnly = true;
-            txtDescription.ReadOnly = true;
+
+            // Description: simple 1-line grey read-only field
+            if (txtDescription != null)
+            {
+                txtDescription.ReadOnly = true;
+                txtDescription.TabStop = false;
+                txtDescription.Multiline = false;
+                txtDescription.WordWrap = false;
+                txtDescription.ScrollBars = ScrollBars.None;
+                txtDescription.BackColor = SystemColors.ControlLight;
+                txtDescription.ForeColor = Color.Black;
+                txtDescription.BorderStyle = BorderStyle.FixedSingle;
+            }
 
             ApplyModernUi();
 
-            // Copies control (1-99)
             if (numCopies != null)
             {
                 numCopies.Minimum = 1;
@@ -86,26 +91,185 @@ namespace shipping_labels
                 numCopies.TextAlign = HorizontalAlignment.Right;
             }
 
-            // Status bar styling (reuses existing lblStatus)
             if (lblStatus != null)
             {
                 lblStatus.AutoSize = false;
                 lblStatus.Dock = DockStyle.Bottom;
-                lblStatus.Height = 26;
+                lblStatus.Height = 28;
                 lblStatus.TextAlign = ContentAlignment.MiddleLeft;
-                lblStatus.Padding = new Padding(8, 0, 8, 0);
+                lblStatus.Padding = new Padding(10, 0, 10, 0);
                 lblStatus.BackColor = Color.Gainsboro;
                 lblStatus.ForeColor = Color.Black;
                 lblStatus.Text = "";
             }
 
-            // Printer status indicator (top-right)
             InitPrinterStatus();
         }
 
+        private void Form1_Shown(object sender, EventArgs e)
+        {
+            CaptureResponsiveBaseline();
+
+            try { this.WindowState = FormWindowState.Maximized; } catch { }
+
+            // Apply after window state actually changes
+            try { BeginInvoke((MethodInvoker)ApplyResponsiveLayout); }
+            catch { ApplyResponsiveLayout(); }
+        }
+
+        private void Form1_SizeChanged(object sender, EventArgs e)
+        {
+            ApplyResponsiveLayout();
+        }
+
+        private void CaptureResponsiveBaseline()
+        {
+            if (_layoutBaselineCaptured) return;
+            _layoutBaselineCaptured = true;
+
+            _baseBounds.Clear();
+            _baseFontSize.Clear();
+            _baseLabelAutoSize.Clear();
+
+            foreach (Control c in this.Controls)
+            {
+                if (c.Dock != DockStyle.None) continue;
+
+                _baseBounds[c] = c.Bounds;
+                if (c.Font != null) _baseFontSize[c] = c.Font.Size;
+
+                var lbl = c as Label;
+                if (lbl != null) _baseLabelAutoSize[c] = lbl.AutoSize;
+            }
+        }
+
+        private void ApplyResponsiveLayout()
+        {
+            if (!_layoutBaselineCaptured) return;
+            if (_applyingResponsiveLayout) return;
+            if (this.ClientSize.Width <= 0 || this.ClientSize.Height <= 0) return;
+
+            _applyingResponsiveLayout = true;
+
+            try
+            {
+                float sx = (float)this.ClientSize.Width / Math.Max(1, _designClientSize.Width);
+                float sy = (float)this.ClientSize.Height / Math.Max(1, _designClientSize.Height);
+                float boundsScale = Math.Min(sx, sy);
+
+                if (boundsScale > 1.60f) boundsScale = 1.60f;
+                if (boundsScale < 0.85f) boundsScale = 0.85f;
+
+                float dpi = 96f;
+                try { dpi = this.DeviceDpi; }
+                catch
+                {
+                    try { using (var g = this.CreateGraphics()) dpi = g.DpiX; } catch { }
+                }
+                float dpiFactor = dpi / 96f;
+
+                float dpiBoost =
+                    (dpiFactor <= 1.05f) ? 1.20f :
+                    (dpiFactor <= 1.25f) ? 1.08f :
+                    1.00f;
+
+                float screenBoost = 1.00f;
+                try
+                {
+                    var wa = Screen.FromControl(this).WorkingArea;
+                    if (wa.Width <= 1600 || wa.Height <= 900) screenBoost = 1.12f;
+                }
+                catch { }
+
+                float fontScale = boundsScale * dpiBoost * screenBoost;
+                if (fontScale > 1.55f) fontScale = 1.55f;
+                if (fontScale < 0.90f) fontScale = 0.90f;
+
+                this.SuspendLayout();
+
+                foreach (Control c in this.Controls)
+                {
+                    if (c.Dock != DockStyle.None) continue;
+
+                    Rectangle baseRect;
+                    if (!_baseBounds.TryGetValue(c, out baseRect)) continue;
+
+                    int newX = (int)Math.Round(baseRect.X * boundsScale);
+                    int newY = (int)Math.Round(baseRect.Y * boundsScale);
+                    int newW = (int)Math.Round(baseRect.Width * boundsScale);
+                    int newH = (int)Math.Round(baseRect.Height * boundsScale);
+
+                    c.SetBounds(newX, newY, newW, newH);
+
+                    float baseFont;
+                    if (_baseFontSize.TryGetValue(c, out baseFont) && c.Font != null)
+                    {
+                        float newFontSize = baseFont * fontScale;
+                        newFontSize = Math.Max(newFontSize, 11f);
+                        newFontSize = Math.Min(newFontSize, 26f);
+                        c.Font = new Font(c.Font.FontFamily, newFontSize, c.Font.Style);
+                    }
+
+                    var lbl = c as Label;
+                    if (lbl != null)
+                    {
+                        lbl.AutoSize = false;
+                        lbl.Height = lbl.PreferredHeight;
+                    }
+
+                    var tb = c as TextBox;
+                    if (tb != null && !tb.Multiline)
+                        tb.Height = tb.PreferredHeight;
+
+                    var nud = c as NumericUpDown;
+                    if (nud != null)
+                        nud.Height = nud.PreferredHeight;
+
+                    var btn = c as Button;
+                    if (btn != null)
+                    {
+                        Size pref = btn.PreferredSize;
+                        int padH = (int)Math.Round(10 * boundsScale);
+                        int padW = (int)Math.Round(16 * boundsScale);
+
+                        int wantH = Math.Max(pref.Height + padH, (int)Math.Round(44 * boundsScale));
+                        int wantW = Math.Max(pref.Width + padW, (int)Math.Round(150 * boundsScale));
+
+                        int maxW = Math.Max(50, this.ClientSize.Width - btn.Left - 10);
+                        btn.Width = Math.Min(wantW, maxW);
+                        btn.Height = wantH;
+                    }
+                }
+
+                if (txtDescription != null)
+                {
+                    txtDescription.Multiline = false;
+                    txtDescription.WordWrap = false;
+                    txtDescription.ScrollBars = ScrollBars.None;
+                    txtDescription.ReadOnly = true;
+                    txtDescription.TabStop = false;
+                    txtDescription.BackColor = SystemColors.ControlLight;
+                    txtDescription.Height = txtDescription.PreferredHeight;
+                }
+
+                if (txtNet != null)
+                    txtNet.Multiline = true;
+
+                this.ResumeLayout(true);
+            }
+            catch
+            {
+                try { this.ResumeLayout(true); } catch { }
+            }
+            finally
+            {
+                _applyingResponsiveLayout = false;
+            }
+        }
+
+        // ---------------- Hotkeys ----------------
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            // We only care about the key itself (ignore modifiers)
             Keys keyCode = keyData & Keys.KeyCode;
 
             if (keyCode == Keys.F13) { ClearAllFields(); return true; }
@@ -136,18 +300,8 @@ namespace shipping_labels
 
         private void HotkeyPrint()
         {
-            // Prevent accidental double-print if the key is held
             if (IsDebounced(ref _lastHotkeyPrintUtc, HotkeyDebouncePrintMs)) return;
-
-            try
-            {
-                if (btnPrint != null && btnPrint.Enabled)
-                    btnPrint.PerformClick();
-            }
-            catch
-            {
-                // never crash on hotkey
-            }
+            try { if (btnPrint != null && btnPrint.Enabled) btnPrint.PerformClick(); } catch { }
         }
 
         private void SetCopiesHotkey(int copies)
@@ -155,18 +309,13 @@ namespace shipping_labels
             try
             {
                 if (numCopies == null) return;
-
                 decimal v = copies;
                 if (v < numCopies.Minimum) v = numCopies.Minimum;
                 if (v > numCopies.Maximum) v = numCopies.Maximum;
-
                 numCopies.Value = v;
                 ShowStatus("Copies set to " + (int)numCopies.Value, isError: false);
             }
-            catch
-            {
-                // never crash on hotkey
-            }
+            catch { }
         }
 
         private void ClearFocusedEntry()
@@ -192,10 +341,7 @@ namespace shipping_labels
                     return;
                 }
             }
-            catch
-            {
-                // never crash on hotkey
-            }
+            catch { }
         }
 
         private void FocusAdjacentEditableTextBox(bool previous)
@@ -213,31 +359,18 @@ namespace shipping_labels
                 {
                     for (int i = 0; i < boxes.Count; i++)
                     {
-                        if (ReferenceEquals(boxes[i], current))
-                        {
-                            idx = i;
-                            break;
-                        }
+                        if (ReferenceEquals(boxes[i], current)) { idx = i; break; }
                     }
                 }
 
-                int targetIdx;
-                if (idx < 0)
-                {
-                    targetIdx = previous ? (boxes.Count - 1) : 0;
-                }
-                else
-                {
-                    targetIdx = previous ? Math.Max(0, idx - 1) : Math.Min(boxes.Count - 1, idx + 1);
-                }
+                int targetIdx = (idx < 0)
+                    ? (previous ? (boxes.Count - 1) : 0)
+                    : (previous ? Math.Max(0, idx - 1) : Math.Min(boxes.Count - 1, idx + 1));
 
                 boxes[targetIdx].Focus();
                 boxes[targetIdx].SelectAll();
             }
-            catch
-            {
-                // never crash on hotkey
-            }
+            catch { }
         }
 
         private List<TextBox> GetEditableTextBoxesOrdered()
@@ -245,7 +378,6 @@ namespace shipping_labels
             var list = new List<TextBox>();
             CollectTextBoxes(this, list);
 
-            // Only the fields workers actually type into
             return list
                 .Where(tb => tb != null && tb.Visible && tb.Enabled && !tb.ReadOnly)
                 .OrderBy(tb => tb.TabIndex)
@@ -260,41 +392,32 @@ namespace shipping_labels
             {
                 var tb = c as TextBox;
                 if (tb != null) list.Add(tb);
-
                 if (c.HasChildren) CollectTextBoxes(c, list);
             }
         }
 
         private static Control GetFocusedControl(Control control)
         {
-            // Walk down the ActiveControl chain (handles containers/panels/etc.)
             var cc = control as ContainerControl;
-
             while (cc != null && cc.ActiveControl != null)
             {
                 control = cc.ActiveControl;
                 cc = control as ContainerControl;
             }
-
             return control;
         }
 
         private void HotkeyForceRestart()
         {
-            // Prevent accidental restart if the key is held
             if (IsDebounced(ref _lastHotkeyRestartUtc, HotkeyDebounceRestartMs)) return;
 
             try { ShowStatusPrinting("Restarting..."); } catch { }
 
             try
             {
-                // Restart after this handler returns (safer than restarting mid-key processing)
                 BeginInvoke((MethodInvoker)delegate
                 {
-                    try
-                    {
-                        Application.Restart();
-                    }
+                    try { Application.Restart(); }
                     catch
                     {
                         try { Process.Start(Application.ExecutablePath); } catch { }
@@ -309,62 +432,54 @@ namespace shipping_labels
             }
         }
 
+        // ---------------- UI styling ----------------
         private void ApplyModernUi()
         {
-            // Form base styling
-            this.Font = new Font("Segoe UI", 10f, FontStyle.Regular);
+            this.Font = new Font("Segoe UI", 12f, FontStyle.Regular);
             this.BackColor = Color.White;
-
-            // Allow fullscreen/maximize and a larger starting size
             this.FormBorderStyle = FormBorderStyle.Sizable;
             this.MaximizeBox = true;
             this.StartPosition = FormStartPosition.CenterScreen;
             this.MinimumSize = new Size(720, 480);
-            this.Size = new Size(900, 600);
+            this.Size = new Size(1000, 700);
 
-            // Buttons: flatter + consistent size
             foreach (var btn in this.Controls.OfType<Button>())
             {
                 btn.FlatStyle = FlatStyle.Flat;
                 btn.FlatAppearance.BorderSize = 0;
-                btn.Height = Math.Max(btn.Height, 40);
+                btn.Height = Math.Max(btn.Height, 44);
                 btn.Cursor = Cursors.Hand;
 
-                // Make the primary button pop a bit, but still simple
                 if (btn == btnPrint)
                 {
-                    btn.UseVisualStyleBackColor = false; // required for BackColor to show
+                    btn.UseVisualStyleBackColor = false;
                     btn.BackColor = Color.FromArgb(30, 136, 229);
                     btn.ForeColor = Color.White;
-                    btn.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+                    btn.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
                 }
                 else if (btn.Name == "btnClear")
                 {
                     btn.UseVisualStyleBackColor = false;
                     btn.BackColor = Color.FromArgb(97, 97, 97);
                     btn.ForeColor = Color.White;
-                    btn.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+                    btn.Font = new Font("Segoe UI", 14f, FontStyle.Bold);
                 }
             }
 
-            // Inputs: slightly larger for workers
             foreach (var tb in this.Controls.OfType<TextBox>())
             {
-                if (tb == txtNet) continue; // already styled
-                tb.Font = new Font("Segoe UI", 10f, FontStyle.Regular);
+                if (tb == txtNet) continue;
+                tb.Font = new Font("Segoe UI", 12f, FontStyle.Regular);
             }
 
             if (numCopies != null)
-            {
-                numCopies.Font = new Font("Segoe UI", 10f, FontStyle.Regular);
-            }
+                numCopies.Font = new Font("Segoe UI", 12f, FontStyle.Regular);
 
             if (lblPrinterStatus != null)
-            {
-                lblPrinterStatus.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            }
+                lblPrinterStatus.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
         }
 
+        // ---------------- Printer status ----------------
         private void InitPrinterStatus()
         {
             _printerTimer.Stop();
@@ -372,37 +487,27 @@ namespace shipping_labels
             _printerTimer.Tick -= PrinterTimer_Tick;
             _printerTimer.Tick += PrinterTimer_Tick;
             _printerTimer.Start();
-
             UpdatePrinterStatus();
         }
 
-        private void PrinterTimer_Tick(object sender, EventArgs e)
-        {
-            UpdatePrinterStatus();
-        }
+        private void PrinterTimer_Tick(object sender, EventArgs e) => UpdatePrinterStatus();
 
         private void UpdatePrinterStatus()
         {
             bool ok = TryGetAnyDymoPrinter(out string printerName);
-
             if (lblPrinterStatus == null) return;
 
             if (ok)
             {
-                string shown = string.IsNullOrWhiteSpace(printerName)
-                    ? "OK"
-                    : "OK (" + Ellipsize(printerName, 28) + ")";
-
+                string shown = string.IsNullOrWhiteSpace(printerName) ? "OK" : "OK (" + Ellipsize(printerName, 28) + ")";
                 lblPrinterStatus.Text = "Printer: " + shown;
                 lblPrinterStatus.ForeColor = Color.DarkGreen;
-
                 try { _printerToolTip.SetToolTip(lblPrinterStatus, printerName ?? ""); } catch { }
             }
             else
             {
                 lblPrinterStatus.Text = "Printer: NOT FOUND";
                 lblPrinterStatus.ForeColor = Color.DarkRed;
-
                 try { _printerToolTip.SetToolTip(lblPrinterStatus, "No DYMO printer detected"); } catch { }
             }
         }
@@ -423,12 +528,9 @@ namespace shipping_labels
             try
             {
                 addIn = CreateComFromProgIds(new[] { "Dymo.DymoAddIn", "DymoAddIn", "DYMO.DymoAddIn" });
-
-                // Most DYMO COM installs support GetDymoPrinters(), returning a string list
                 var printers = TryInvokeComString(addIn, "GetDymoPrinters");
                 if (string.IsNullOrWhiteSpace(printers)) return false;
 
-                // Common formats: "Printer1|Printer2|..." OR "Printer1;Printer2;..." (sometimes newline-separated)
                 var parts = printers
                     .Split(new[] { '|', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => (s ?? "").Trim())
@@ -437,7 +539,6 @@ namespace shipping_labels
 
                 if (parts.Count == 0) return false;
 
-                // Prefer 4XL if present, otherwise first available
                 var preferred = parts.FirstOrDefault(p =>
                     p.IndexOf("4XL", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     p.IndexOf("LabelWriter 4XL", StringComparison.OrdinalIgnoreCase) >= 0);
@@ -445,14 +546,8 @@ namespace shipping_labels
                 printerName = preferred ?? parts[0];
                 return true;
             }
-            catch
-            {
-                return false;
-            }
-            finally
-            {
-                ReleaseComObjectQuietly(addIn);
-            }
+            catch { return false; }
+            finally { ReleaseComObjectQuietly(addIn); }
         }
 
         private void ShowStatus(string message, bool isError)
@@ -460,7 +555,6 @@ namespace shipping_labels
             if (lblStatus == null) return;
 
             lblStatus.Text = message ?? "";
-
             if (isError)
             {
                 lblStatus.BackColor = Color.Firebrick;
@@ -502,6 +596,7 @@ namespace shipping_labels
             catch { return null; }
         }
 
+        // ---------------- Core behavior ----------------
         private void Form1_Load(object sender, EventArgs e)
         {
             try
@@ -532,7 +627,7 @@ namespace shipping_labels
             if (_productsByCode.TryGetValue(code, out info))
             {
                 txtPrintProductId.Text = info.PrintedProductId ?? "";
-                txtDescription.Text = info.Description ?? "";
+                txtDescription.Text = (info.Description ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
                 ShowStatus("OK", isError: false);
             }
             else
@@ -559,7 +654,16 @@ namespace shipping_labels
             txtNet.Text = net.ToString("0.###", CultureInfo.InvariantCulture);
         }
 
+        private void btnClear_Click(object sender, EventArgs e) => ClearAllFields();
+
+        // ✅ ADDED: this aligns with Designer wiring and preserves intended behavior
         private void btnPrint_Click(object sender, EventArgs e)
+        {
+            PrintLabelsFromUi();
+        }
+
+        // ✅ ADDED: actual print routine (DYMO COM, template.label, copies)
+        private void PrintLabelsFromUi()
         {
             object addIn = null;
             object labels = null;
@@ -567,16 +671,13 @@ namespace shipping_labels
 
             try
             {
-                // Copies (1-99)
-                int copies = 1;
-                if (numCopies != null) copies = (int)numCopies.Value;
+                int copies = (numCopies != null) ? (int)numCopies.Value : 1;
                 if (copies < 1)
                 {
                     ShowStatus("Copies must be at least 1.", isError: true);
                     return;
                 }
 
-                // Validate
                 string code = NormalizeCode(txtProductCode.Text);
                 if (string.IsNullOrWhiteSpace(code))
                     throw new Exception("Enter a Product Code.");
@@ -597,61 +698,48 @@ namespace shipping_labels
 
                 decimal net = gross - tare;
 
-                // Files (must be copied next to EXE)
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string labelPath = System.IO.Path.Combine(baseDir, "template.label");
+                string labelPath = Path.Combine(baseDir, "template.label");
                 if (!File.Exists(labelPath))
                     throw new FileNotFoundException("template.label not found next to EXE.", labelPath);
 
-                // DYMO COM late-binding (works with your setup)
+                // DYMO COM late-binding
                 addIn = CreateComFromProgIds(new[] { "Dymo.DymoAddIn", "DymoAddIn", "DYMO.DymoAddIn" });
                 labels = CreateComFromProgIds(new[] { "Dymo.DymoLabels", "DymoLabels", "DYMO.DymoLabels" });
 
-                // Quick "is a printer there?" check (best-effort)
                 if (!TryGetAnyDymoPrinter(out string printerName))
                     throw new Exception("No DYMO printer detected. Check USB/power and DYMO drivers.");
 
-                // Force DYMO COM to target the selected printer (critical when multiple DYMO printers exist)
+                // Select printer if possible
                 if (!string.IsNullOrWhiteSpace(printerName))
                 {
                     if (!TryInvokeCom(addIn, "SelectPrinter", printerName))
-                        TryInvokeCom(addIn, "SelectPrinter2", printerName); // some installs use SelectPrinter2
+                        TryInvokeCom(addIn, "SelectPrinter2", printerName);
                 }
 
-                // Show the printer name (if available)
-                if (!string.IsNullOrWhiteSpace(printerName) && lblPrinterStatus != null)
-                {
-                    try { lblPrinterStatus.Text = "Printer: OK (" + Ellipsize(printerName, 28) + ")"; } catch { }
-                }
-
+                // Open template
                 InvokeCom(addIn, "Open", labelPath);
 
-                // Fill template objects (these must match your Object IDs)
+                // Fill label fields (these must match your template object IDs)
                 SetField(labels, "HEATID", heat);
                 SetField(labels, "GROSS", gross.ToString("0.###", CultureInfo.InvariantCulture));
                 SetField(labels, "TARE", tare.ToString("0.###", CultureInfo.InvariantCulture));
                 SetField(labels, "NET", net.ToString("0.###", CultureInfo.InvariantCulture));
-
-                // CSV conventions:
-                // Product Name = long-form ID → print into PRODUCTID
-                // Product Description = item name → print into PRODUCTDESCRIPTION
                 SetField(labels, "PRODUCTID", (info.PrintedProductId ?? "").Trim());
                 SetField(labels, "PRODUCTDESCRIPTION", (info.Description ?? "").Trim());
 
-                // Yellow status while printing
                 ShowStatusPrinting("Printing " + copies + " label(s)...");
-                if (lblStatus != null) lblStatus.Refresh();
 
                 TryInvokeCom(addIn, "StartPrintJob");
                 printJobStarted = true;
 
-                // Print N copies
+                // Print copies
                 InvokeCom(addIn, "Print", copies, false);
 
                 TryInvokeCom(addIn, "EndPrintJob");
                 printJobStarted = false;
 
-                // After print: clear just weights for fast repeat
+                // Clear weights after print for quick repeat
                 txtGross.Text = "";
                 txtTare.Text = "";
                 txtNet.Text = "";
@@ -661,20 +749,8 @@ namespace shipping_labels
             }
             catch (COMException ex)
             {
-                ShowStatus("Printer error: check roll/feed and printer connection.", isError: true);
-
-                MessageBox.Show(
-                    "Printer error occurred.\r\n\r\n" +
-                    "Check:\r\n" +
-                    "- Label roll loaded\r\n" +
-                    "- Feed path not jammed\r\n" +
-                    "- Printer connected & powered\r\n" +
-                    "- DYMO software can see the printer\r\n\r\n" +
-                    "Details:\r\n" + ex.Message,
-                    "Printer Error",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error
-                );
+                ShowStatus("Printer error: check roll/feed and connection.", isError: true);
+                MessageBox.Show(ex.Message, "Printer Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch (Exception ex)
             {
@@ -685,18 +761,12 @@ namespace shipping_labels
             {
                 if (printJobStarted && addIn != null)
                 {
-                    // Try to end print job to avoid getting "stuck"
                     try { TryInvokeCom(addIn, "EndPrintJob"); } catch { }
                 }
 
                 ReleaseComObjectQuietly(labels);
                 ReleaseComObjectQuietly(addIn);
             }
-        }
-
-        private void btnClear_Click(object sender, EventArgs e)
-        {
-            ClearAllFields();
         }
 
         private void ClearAllFields()
@@ -710,16 +780,11 @@ namespace shipping_labels
                 txtNet.Text = "";
                 txtPrintProductId.Text = "";
                 txtDescription.Text = "";
-
                 if (numCopies != null) numCopies.Value = 1;
-
                 ShowStatus("Cleared.", isError: false);
                 txtProductCode.Focus();
             }
-            catch
-            {
-                // Don't crash on clear
-            }
+            catch { }
         }
 
         // ---------- CSV ----------
@@ -727,7 +792,7 @@ namespace shipping_labels
         {
             _productsByCode.Clear();
 
-            string csvPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "productIDs.csv");
+            string csvPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "productIDs.csv");
             if (!File.Exists(csvPath))
                 throw new FileNotFoundException("productIDs.csv not found next to EXE.", csvPath);
 
@@ -738,7 +803,7 @@ namespace shipping_labels
 
                 var headers = SplitCsvLine(headerLine).Select(h => (h ?? "").Trim()).ToList();
 
-                int idxCode = 0; // first column is blank header
+                int idxCode = 0;
                 int idxName = IndexOfHeader(headers, "Product Name");
                 int idxDesc = IndexOfHeader(headers, "Product Description");
 
@@ -806,7 +871,6 @@ namespace shipping_labels
         private static string NormalizeCode(string input)
         {
             if (input == null) return "";
-            // keep digits only (handles weird "1002.0" etc)
             return Regex.Replace(input.Trim(), @"\D", "");
         }
 
@@ -860,11 +924,7 @@ namespace shipping_labels
 
         private static bool TryInvokeCom(object target, string methodName, params object[] args)
         {
-            try
-            {
-                InvokeCom(target, methodName, args);
-                return true;
-            }
+            try { InvokeCom(target, methodName, args); return true; }
             catch { return false; }
         }
     }
